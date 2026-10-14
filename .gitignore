@@ -1,0 +1,32 @@
+# Python virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Binary downloads
+cloudflared.exe
+
+# Video & media files
+*.mp4
+*.mkv
+*.webm
+*.avi
+*.mov
+*.m4v
+*.flv
+*.wmv
+
+# OS and IDE files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.log

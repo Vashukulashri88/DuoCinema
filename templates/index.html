@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DuoCinema - Watch Party & Video Chat</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="theme-dark">
+    <!-- Background ambiance glow -->
+    <div class="ambient-glow" id="ambientGlow"></div>
+
+    <div class="app-layout">
+        <!-- Top Navigation Bar -->
+        <header class="app-header">
+            <div class="header-left">
+                <div class="logo">
+                    <span class="logo-icon">🍿</span>
+                    <span class="logo-text">Duo<strong>Cinema</strong></span>
+                    <span class="badge-romance">❤️ Watch Together</span>
+                </div>
+                <div class="movie-title-badge" id="movieTitleBadge">
+                    <span class="icon">🎬</span>
+                    <span id="currentMovieName">No movie loaded</span>
+                </div>
+            </div>
+
+            <div class="header-right">
+                <div class="sync-indicator" id="syncIndicator" title="Playback sync status">
+                    <span class="sync-dot"></span>
+                    <span class="sync-text">Connected</span>
+                </div>
+
+                <div class="user-pill" id="userPill">
+                    <span class="user-icon">👤</span>
+                    <span id="displayUserName">Connecting...</span>
+                </div>
+
+                <button class="btn btn-secondary" id="btnShareModal">
+                    <span>🔗 Share Link</span>
+                </button>
+
+                <button class="btn btn-primary" id="btnSelectMovie">
+                    <span>📂 Select Movie File</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content Grid -->
+        <main class="main-container">
+            <!-- Theater Area -->
+            <section class="theater-section">
+                <div class="video-wrapper" id="videoWrapper">
+                    <!-- Empty State when no movie is loaded -->
+                    <div class="no-movie-overlay" id="noMovieOverlay">
+                        <div class="empty-card">
+                            <div class="empty-icon">🎥</div>
+                            <h2>Ready for Movie Night?</h2>
+                            <p>Select any locally stored movie or video file on your laptop to start streaming simultaneously to both of you.</p>
+                            <div class="empty-actions">
+                                <button class="btn btn-primary btn-large" id="btnSelectMovieEmpty">
+                                    <span>📂 Choose Video File</span>
+                                </button>
+                                <span class="format-hint">Supports MP4, MKV, WebM, MOV</span>
+                            </div>
+                            <div class="path-input-row">
+                                <input type="text" id="manualPathInput" placeholder="Or paste absolute file path here (e.g. C:\Movies\Inception.mp4)">
+                                <button class="btn btn-secondary" id="btnLoadPath">Load</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Synchronized Video Element -->
+                    <video id="sharedVideo" preload="metadata" playsinline>
+                        <source id="videoSource" src="/api/video/stream" type="video/mp4">
+                        Your browser does not support HTML5 video.
+                    </video>
+
+                    <!-- Floating Reaction Canvas -->
+                    <div id="reactionContainer" class="reaction-container"></div>
+
+                    <!-- Custom Player Controls Overlay -->
+                    <div class="player-controls" id="playerControls">
+                        <div class="progress-bar-container" id="progressBarContainer">
+                            <div class="progress-buffered" id="progressBuffered"></div>
+                            <div class="progress-played" id="progressPlayed"></div>
+                            <div class="progress-hover-time" id="progressHoverTime">0:00</div>
+                        </div>
+
+                        <div class="controls-row">
+                            <div class="controls-left">
+                                <button class="control-btn" id="btnPlayPause" title="Play/Pause (Space)">
+                                    <span id="playPauseIcon">▶️</span>
+                                </button>
+                                <button class="control-btn" id="btnRewind" title="Back 10s">
+                                    <span>⏪ 10s</span>
+                                </button>
+                                <button class="control-btn" id="btnForward" title="Forward 10s">
+                                    <span>⏩ 10s</span>
+                                </button>
+                                <div class="time-display">
+                                    <span id="currentTimeDisplay">00:00</span>
+                                    <span class="time-sep">/</span>
+                                    <span id="durationDisplay">00:00</span>
+                                </div>
+                            </div>
+
+                            <div class="controls-center">
+                                <!-- Floating Reactions Quick Bar -->
+                                <div class="reaction-bar">
+                                    <button class="reaction-btn" data-emoji="❤️" title="Love">❤️</button>
+                                    <button class="reaction-btn" data-emoji="🍿" title="Popcorn">🍿</button>
+                                    <button class="reaction-btn" data-emoji="😂" title="Laugh">😂</button>
+                                    <button class="reaction-btn" data-emoji="🥺" title="Aww">🥺</button>
+                                    <button class="reaction-btn" data-emoji="🔥" title="Lit">🔥</button>
+                                    <button class="reaction-btn" data-emoji="💋" title="Kiss">💋</button>
+                                </div>
+                            </div>
+
+                            <div class="controls-right">
+                                <div class="volume-container">
+                                    <button class="control-btn" id="btnMuteMovie" title="Mute/Unmute Movie">
+                                        <span id="volumeIcon">🔊</span>
+                                    </button>
+                                    <input type="range" id="movieVolume" min="0" max="1" step="0.05" value="1" class="volume-slider">
+                                </div>
+
+                                <div class="speed-selector">
+                                    <select id="playbackSpeed" title="Playback Speed">
+                                        <option value="0.75">0.75x</option>
+                                        <option value="1.0" selected>1.0x</option>
+                                        <option value="1.25">1.25x</option>
+                                        <option value="1.5">1.5x</option>
+                                    </select>
+                                </div>
+
+                                <button class="control-btn" id="btnSyncNow" title="Force Resync">
+                                    <span>🔄 Resync</span>
+                                </button>
+
+                                <button class="control-btn" id="btnFullscreen" title="Fullscreen (F)">
+                                    <span>⛶</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Floating / Docked Two-Way Video Call Card -->
+            <aside class="sidebar-section" id="callSidebar">
+                <div class="video-call-card" id="callCard">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <span class="cam-icon">📹</span>
+                            <span>FaceCam Call</span>
+                            <span class="call-badge" id="callStatusBadge">Ready</span>
+                        </div>
+                        <div class="card-actions">
+                            <button class="icon-btn" id="btnToggleCamDock" title="Switch Floating/Docked">📌</button>
+                        </div>
+                    </div>
+
+                    <div class="cams-grid">
+                        <!-- Remote Partner Video -->
+                        <div class="video-box partner-box" id="partnerBox">
+                            <video id="remoteVideo" autoplay playsinline></video>
+                            <div class="video-placeholder" id="remotePlaceholder">
+                                <div class="avatar-circle">💖</div>
+                                <span class="placeholder-text" id="partnerStatusText">Waiting for partner to join...</span>
+                            </div>
+                            <div class="video-label" id="partnerLabel">Partner</div>
+                        </div>
+
+                        <!-- Local Self Preview (Picture in Picture) -->
+                        <div class="video-box local-box" id="localBox">
+                            <video id="localVideo" autoplay playsinline muted></video>
+                            <div class="video-placeholder" id="localPlaceholder">
+                                <div class="avatar-circle">👤</div>
+                                <span>You</span>
+                            </div>
+                            <div class="video-label">You</div>
+                        </div>
+                    </div>
+
+                    <!-- Call Media Controls -->
+                    <div class="call-controls">
+                        <button class="call-btn active" id="btnToggleMic" title="Mute/Unmute Mic">
+                            <span class="btn-icon">🎙️</span>
+                            <span class="btn-label">Mic On</span>
+                        </button>
+                        <button class="call-btn active" id="btnToggleCam" title="Turn Camera On/Off">
+                            <span class="btn-icon">📷</span>
+                            <span class="btn-label">Cam On</span>
+                        </button>
+                        <button class="call-btn btn-call-action" id="btnStartCall" title="Start / Reconnect Video Call">
+                            <span class="btn-icon">⚡</span>
+                            <span class="btn-label">Connect Cam</span>
+                        </button>
+                    </div>
+
+                    <!-- Volume slider for partner's voice -->
+                    <div class="partner-volume-row">
+                        <span>Partner Voice Volume:</span>
+                        <input type="range" id="partnerVolume" min="0" max="1" step="0.05" value="1">
+                    </div>
+                </div>
+
+                <!-- Chat & Reactions Drawer -->
+                <div class="chat-card">
+                    <div class="chat-header">
+                        <span class="chat-title">💬 Live Room Chat</span>
+                        <span class="user-count" id="userCountBadge">1 watching</span>
+                    </div>
+
+                    <div class="chat-messages" id="chatMessages">
+                        <div class="chat-system-msg">
+                            Welcome to DuoCinema! Connect your webcam, grab some popcorn, and enjoy the show! ✨
+                        </div>
+                    </div>
+
+                    <form class="chat-input-bar" id="chatForm">
+                        <input type="text" id="chatInput" placeholder="Send a message or whisper..." autocomplete="off">
+                        <button type="submit" class="btn-send">Send</button>
+                    </form>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <!-- Share Link Modal -->
+    <div class="modal-overlay" id="shareModal">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>💖 Invite Your Girlfriend / Partner</h3>
+                <button class="modal-close" id="btnCloseShareModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Highlighted Option 1: Secure HTTPS Cloudflare Link -->
+                <div class="share-box highlight-box">
+                    <div class="box-badge">🌟 RECOMMENDED (Enables Phone Camera & Mic)</div>
+                    <label>Secure Link for Phone or Long-Distance:</label>
+                    <div class="copy-row">
+                        <input type="text" id="tunnelLinkInput" value="Generating secure link..." readonly>
+                        <button class="btn btn-primary" id="btnCopyTunnelLink">Copy Link</button>
+                    </div>
+                    <small>✨ <strong>Why use this:</strong> Phone browsers require <code>https://</code> for camera/mic access. This free secure link unlocks webcam, audio, and sync anywhere in the world!</small>
+                    
+                    <div class="qr-preview-row" id="qrContainer" style="display: none;">
+                        <img id="qrCodeImg" src="" alt="Scan QR Code to join" class="qr-image">
+                        <span class="qr-text">Scan with phone camera to join instantly! 📱</span>
+                    </div>
+                </div>
+
+                <!-- Option 2: Local Wi-Fi Link -->
+                <div class="share-box">
+                    <label>Local Wi-Fi Network Link (Same House):</label>
+                    <div class="copy-row">
+                        <input type="text" id="lanLinkInput" value="http://{{ local_ip }}:{{ port }}" readonly>
+                        <button class="btn btn-secondary" id="btnCopyLanLink">Copy</button>
+                    </div>
+                    <small>Works for laptops on the same Wi-Fi. <em>(Note: Mobile browsers block camera on plain http:// IP addresses unless using the Secure link above)</em>.</small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Name Setup Modal (if joining) -->
+    <div class="modal-overlay" id="nameModal">
+        <div class="modal-card mini-card">
+            <div class="modal-header">
+                <h3>👋 What's your name?</h3>
+            </div>
+            <div class="modal-body">
+                <p>Pick a nickname for the watch party:</p>
+                <div class="input-group">
+                    <input type="text" id="userNameInput" placeholder="Your name (e.g. Alex, Honey)" maxlength="20">
+                    <button class="btn btn-primary" id="btnSaveName">Join Party</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden configuration injected from backend -->
+    <script>
+        window.APP_CONFIG = {
+            localIp: "{{ local_ip }}",
+            port: "{{ port }}",
+            tunnelUrl: "{{ tunnel_url }}",
+            iceServers: {{ ice_servers | safe }}
+        };
+    </script>
+
+    <script src="/static/js/webrtc.js"></script>
+    <script src="/static/js/player.js"></script>
+    <script src="/static/js/chat.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
