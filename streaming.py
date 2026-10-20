@@ -1,4 +1,5 @@
 import os
+import asyncio
 import mimetypes
 from typing import AsyncGenerator, Tuple
 from fastapi import Request, HTTPException, status
@@ -20,8 +21,6 @@ def get_file_mime(filepath: str) -> str:
     elif ext == ".webm":
         return "video/webm"
     elif ext == ".mkv":
-        # Many Chromium browsers & Android devices can parse MKV directly
-        # when sent as video/mp4, video/webm or video/x-matroska
         return "video/x-matroska"
     elif ext == ".mov":
         return "video/quicktime"
@@ -50,8 +49,6 @@ def parse_range_header(range_header: str, file_size: int) -> Tuple[int, int]:
             end = int(end_str)
         elif start_str:
             start = int(start_str)
-            # Smart Chunk Capping: Don't stream all 16GB in one response!
-            # Stream up to 8MB per range slice so the browser buffers progressively
             end = min(start + MAX_CHUNK_SERVED - 1, file_size - 1)
         elif end_str:
             suffix_len = int(end_str)
@@ -68,29 +65,51 @@ def parse_range_header(range_header: str, file_size: int) -> Tuple[int, int]:
 
 async def async_file_chunk_generator(filepath: str, start: int, end: int, block_size: int = READ_BLOCK_SIZE) -> AsyncGenerator[bytes, None]:
     """
-    Asynchronously reads byte slices from disk using aiofiles.
-    Non-blocking for FastAPI event loop, ultra-fast for multi-gigabyte video files.
+    Asynchronously reads byte slices from disk using aiofiles with automatic lock retry.
+    Prevents PermissionError when OneDrive sync or torrent clients temporarily hold file locks.
     """
-    async with aiofiles.open(filepath, mode="rb") as f:
-        await f.seek(start)
+    file_obj = None
+    for attempt in range(6):
+        try:
+            file_obj = await aiofiles.open(filepath, mode="rb")
+            break
+        except (PermissionError, OSError) as e:
+            if attempt == 5:
+                print(f"File temporarily locked by another process (OneDrive/Torrent): {filepath} ({e})")
+                return
+            await asyncio.sleep(0.08)
+
+    if file_obj is None:
+        return
+
+    try:
+        await file_obj.seek(start)
         bytes_remaining = end - start + 1
         while bytes_remaining > 0:
             read_len = min(block_size, bytes_remaining)
-            data = await f.read(read_len)
+            data = await file_obj.read(read_len)
             if not data:
                 break
             bytes_remaining -= len(data)
             yield data
+    finally:
+        await file_obj.close()
 
 def range_stream_response(request: Request, filepath: str) -> StreamingResponse:
     if not os.path.exists(filepath):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video file not found")
 
-    stat_result = os.stat(filepath)
-    file_size = stat_result.st_size
-    mtime = int(stat_result.st_mtime)
+    try:
+        stat_result = os.stat(filepath)
+        file_size = stat_result.st_size
+        mtime = int(stat_result.st_mtime)
+    except (PermissionError, OSError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Video file is currently locked by another application (e.g. OneDrive sync). Please try again in a moment. ({e})"
+        )
+
     etag = f'"{file_size}-{mtime}"'
-    
     range_header = request.headers.get("range")
     content_type = get_file_mime(filepath)
 
@@ -104,7 +123,6 @@ def range_stream_response(request: Request, filepath: str) -> StreamingResponse:
             "Content-Length": str(content_length),
             "Content-Type": content_type,
             "ETag": etag,
-            # Cache segments so rewinds & repeated seeks don't re-download from disk
             "Cache-Control": "public, max-age=86400, immutable",
             "X-Content-Type-Options": "nosniff"
         }
@@ -116,8 +134,6 @@ def range_stream_response(request: Request, filepath: str) -> StreamingResponse:
             media_type=content_type,
         )
     else:
-        # If no range requested (e.g. metadata probe), serve initial chunk or full header
-        initial_chunk_size = min(MAX_CHUNK_SERVED, file_size)
         headers = {
             "Accept-Ranges": "bytes",
             "Content-Length": str(file_size),

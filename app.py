@@ -1,12 +1,15 @@
 import os
+import sys
+import subprocess
 import json
 import asyncio
 import time
 import concurrent.futures
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, Optional, Set
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -15,7 +18,18 @@ from config import BASE_DIR, get_local_ip, ICE_SERVERS, SUPPORTED_EXTENSIONS
 from streaming import range_stream_response
 from tunnel import tunnel_manager
 
-app = FastAPI(title="DuoCinema - Movie Watch Party")
+# Thread pool for background tasks
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Attempt to auto-start cloudflared tunnel in background thread
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(executor, tunnel_manager.start)
+    yield
+    tunnel_manager.stop()
+
+app = FastAPI(title="DuoCinema - Movie Watch Party", lifespan=lifespan)
 
 # Directories
 STATIC_DIR = BASE_DIR / "static"
@@ -28,9 +42,6 @@ TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-
-# Thread pool for file dialog and tunnel
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
 
 def extract_youtube_id(url: str) -> Optional[str]:
     """Extracts the 11-character YouTube video ID from various link formats."""
@@ -94,27 +105,19 @@ class WatchPartyState:
 state = WatchPartyState()
 
 def open_windows_file_dialog() -> Optional[str]:
-    """Runs a Windows native file dialog to select a video."""
+    """Runs a Windows native file dialog in an isolated process to avoid Tkinter thread affinity issues."""
     try:
-        import tkinter as tk
-        from tkinter import filedialog
-        
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        
-        file_path = filedialog.askopenfilename(
-            title="Select Movie / Video to Watch Together",
-            filetypes=[
-                ("Supported Video Files", "*.mp4;*.webm;*.mkv;*.mov;*.m4v;*.avi"),
-                ("MP4 Videos (*.mp4)", "*.mp4"),
-                ("MKV Videos (*.mkv)", "*.mkv"),
-                ("WebM Videos (*.webm)", "*.webm"),
-                ("All Files (*.*)", "*.*")
-            ]
+        script_path = BASE_DIR / "file_dialog.py"
+        res = subprocess.run(
+            [sys.executable, str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=180
         )
-        root.destroy()
-        return file_path if file_path else None
+        selected = res.stdout.strip()
+        if selected and os.path.isfile(selected):
+            return selected
+        return None
     except Exception as e:
         print(f"File dialog error: {e}")
         return None
@@ -134,15 +137,9 @@ async def broadcast(message: dict, exclude_client_id: Optional[str] = None):
     for cid in dead_clients:
         state.clients.pop(cid, None)
 
-@app.on_event("startup")
-async def startup_event():
-    # Attempt to auto-start cloudflared tunnel in background thread
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(executor, tunnel_manager.start)
-
-@app.on_event("shutdown")
-def shutdown_event():
-    tunnel_manager.stop()
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(status_code=204)
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):

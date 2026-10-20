@@ -1,7 +1,7 @@
 @echo off
 title DuoCinema - Movie Watch Party
 echo ===================================================
-echo     DuoCinema - Watch Movies Together & Video Call
+echo     DuoCinema - Watch Movies Together ^& Video Call
 echo ===================================================
 echo.
 
