@@ -43,6 +43,10 @@
                     <span>🔗 Share Link</span>
                 </button>
 
+                <button class="btn btn-secondary" id="btnYoutubeModal">
+                    <span>📺 YouTube Link</span>
+                </button>
+
                 <button class="btn btn-primary" id="btnSelectMovie">
                     <span>📂 Select Movie File</span>
                 </button>
@@ -68,16 +72,28 @@
                             </div>
                             <div class="path-input-row">
                                 <input type="text" id="manualPathInput" placeholder="Or paste absolute file path here (e.g. C:\Movies\Inception.mp4)">
-                                <button class="btn btn-secondary" id="btnLoadPath">Load</button>
+                                <button class="btn btn-secondary" id="btnLoadPath">Load File</button>
+                            </div>
+                            <div class="empty-divider">
+                                <span>OR STREAM YOUTUBE TOGETHER</span>
+                            </div>
+                            <div class="path-input-row youtube-row">
+                                <input type="text" id="youtubeUrlEmptyInput" placeholder="Paste YouTube Link (e.g. https://www.youtube.com/watch?v=...)">
+                                <button class="btn btn-primary" id="btnLoadYoutubeEmpty">Play YouTube 📺</button>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Synchronized Video Element -->
+                    <!-- Synchronized Video Element (Local Movies) -->
                     <video id="sharedVideo" preload="metadata" playsinline>
                         <source id="videoSource" src="/api/video/stream" type="video/mp4">
                         Your browser does not support HTML5 video.
                     </video>
+
+                    <!-- Synchronized YouTube Player Container -->
+                    <div id="youtubeContainer" class="youtube-container" style="display: none;">
+                        <div id="youtubePlayer"></div>
+                    </div>
 
                     <!-- Floating Reaction Canvas -->
                     <div id="reactionContainer" class="reaction-container"></div>
@@ -268,6 +284,29 @@
         </div>
     </div>
 
+    <!-- YouTube Link Modal -->
+    <div class="modal-overlay" id="youtubeModal">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>📺 Watch YouTube Together</h3>
+                <button class="modal-close" id="btnCloseYoutubeModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-desc">Paste any YouTube video or Shorts link. Both of you will watch it in real-time synchronization with synchronized Play, Pause, and Seek!</p>
+                <div class="input-group">
+                    <input type="text" id="youtubeUrlInput" placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/...">
+                    <button class="btn btn-primary" id="btnSubmitYoutube">Watch Together 🚀</button>
+                </div>
+                <div class="quick-samples">
+                    <small>Quick Samples: </small>
+                    <button type="button" class="btn-sample" data-url="https://www.youtube.com/watch?v=jfKfPfyJRdk">Lo-Fi Chill 🎧</button>
+                    <button type="button" class="btn-sample" data-url="https://www.youtube.com/watch?v=aqz-KE-bpKQ">Big Buck Bunny 🐰</button>
+                    <button type="button" class="btn-sample" data-url="https://www.youtube.com/watch?v=LXb3EKWsInQ">4K Nature 🌿</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Name Setup Modal (if joining) -->
     <div class="modal-overlay" id="nameModal">
         <div class="modal-card mini-card">
@@ -294,6 +333,7 @@
         };
     </script>
 
+    <script src="https://www.youtube.com/iframe_api"></script>
     <script src="/static/js/webrtc.js"></script>
     <script src="/static/js/player.js"></script>
     <script src="/static/js/chat.js"></script>

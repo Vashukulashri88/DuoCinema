@@ -1,5 +1,6 @@
 /**
  * Main Application Orchestrator for DuoCinema
+ * Handles Local Movies, YouTube Streaming, WebRTC Video Chat, and UI Modals
  */
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -17,6 +18,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnSelectMovieEmpty = document.getElementById("btnSelectMovieEmpty");
     const manualPathInput = document.getElementById("manualPathInput");
     const btnLoadPath = document.getElementById("btnLoadPath");
+
+    // YouTube elements
+    const btnYoutubeModal = document.getElementById("btnYoutubeModal");
+    const youtubeModal = document.getElementById("youtubeModal");
+    const btnCloseYoutubeModal = document.getElementById("btnCloseYoutubeModal");
+    const youtubeUrlInput = document.getElementById("youtubeUrlInput");
+    const btnSubmitYoutube = document.getElementById("btnSubmitYoutube");
+    const youtubeUrlEmptyInput = document.getElementById("youtubeUrlEmptyInput");
+    const btnLoadYoutubeEmpty = document.getElementById("btnLoadYoutubeEmpty");
+    const sampleButtons = document.querySelectorAll(".btn-sample");
     
     // Share modal elements
     const btnShareModal = document.getElementById("btnShareModal");
@@ -53,7 +64,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Initial Name Setup
     if (!myName) {
-        // If on localhost, default to Host
         if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
             myName = "Host";
             localStorage.setItem("duo_cinema_name", myName);
@@ -158,7 +168,10 @@ document.addEventListener("DOMContentLoaded", () => {
                     updateTunnelUI(msg.tunnel_url);
                 }
 
-                if (msg.video_selected) {
+                if (msg.media_type === "youtube" && msg.youtube_id) {
+                    updateVideoInfo(msg.video_name || "YouTube Video", true);
+                    player.loadYoutubeVideo(msg.youtube_id, msg.currentTime || 0, msg.player_status === "playing");
+                } else if (msg.video_selected) {
                     updateVideoInfo(msg.video_name, true);
                     player.loadNewVideo(msg.video_name);
                     if (msg.currentTime > 0) {
@@ -168,9 +181,19 @@ document.addEventListener("DOMContentLoaded", () => {
                         player.video.play().catch(e => console.log(e));
                     }
                 } else {
-                    updateVideoInfo("No movie loaded", false);
+                    updateVideoInfo("No media loaded", false);
                 }
                 chat.updateUserCount((msg.users && msg.users.length) || 1);
+                break;
+
+            case "media_mode_changed":
+                if (msg.media_type === "youtube") {
+                    updateVideoInfo(msg.video_name || "YouTube Video", true);
+                    player.loadYoutubeVideo(msg.youtube_id, msg.currentTime || 0, false);
+                } else {
+                    updateVideoInfo(msg.video_name, true);
+                    player.loadNewVideo(msg.video_name);
+                }
                 break;
 
             case "tunnel_ready":
@@ -251,6 +274,78 @@ document.addEventListener("DOMContentLoaded", () => {
             noMovieOverlay.style.display = isLoaded ? "none" : "flex";
         }
     }
+
+    // YouTube playback handler
+    async function playYouTubeLink(rawUrl) {
+        if (!rawUrl || !rawUrl.trim()) return;
+        try {
+            const resp = await fetch("/api/set-youtube-url", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url: rawUrl.trim() })
+            });
+            const res = await resp.json();
+            if (!res.success) {
+                alert(res.detail || "Invalid YouTube link. Please check the URL.");
+            } else {
+                if (youtubeModal) youtubeModal.classList.remove("active");
+                if (youtubeUrlInput) youtubeUrlInput.value = "";
+                if (youtubeUrlEmptyInput) youtubeUrlEmptyInput.value = "";
+            }
+        } catch (e) {
+            alert("Error loading YouTube video: " + e.message);
+        }
+    }
+
+    // Modal controls for YouTube
+    if (btnYoutubeModal) {
+        btnYoutubeModal.addEventListener("click", () => {
+            if (youtubeModal) youtubeModal.classList.add("active");
+            if (youtubeUrlInput) youtubeUrlInput.focus();
+        });
+    }
+    if (btnCloseYoutubeModal) {
+        btnCloseYoutubeModal.addEventListener("click", () => {
+            if (youtubeModal) youtubeModal.classList.remove("active");
+        });
+    }
+    if (youtubeModal) {
+        youtubeModal.addEventListener("click", (e) => {
+            if (e.target === youtubeModal) youtubeModal.classList.remove("active");
+        });
+    }
+
+    if (btnSubmitYoutube) {
+        btnSubmitYoutube.addEventListener("click", () => {
+            playYouTubeLink(youtubeUrlInput.value);
+        });
+    }
+    if (youtubeUrlInput) {
+        youtubeUrlInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") playYouTubeLink(youtubeUrlInput.value);
+        });
+    }
+
+    if (btnLoadYoutubeEmpty) {
+        btnLoadYoutubeEmpty.addEventListener("click", () => {
+            playYouTubeLink(youtubeUrlEmptyInput.value);
+        });
+    }
+    if (youtubeUrlEmptyInput) {
+        youtubeUrlEmptyInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") playYouTubeLink(youtubeUrlEmptyInput.value);
+        });
+    }
+
+    sampleButtons.forEach(btn => {
+        btn.addEventListener("click", () => {
+            const sampleUrl = btn.dataset.url;
+            if (sampleUrl) {
+                if (youtubeUrlInput) youtubeUrlInput.value = sampleUrl;
+                playYouTubeLink(sampleUrl);
+            }
+        });
+    });
 
     // Trigger Native Windows File Dialog on Host
     async function triggerSelectFileDialog() {

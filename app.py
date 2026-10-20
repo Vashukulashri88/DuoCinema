@@ -32,11 +32,29 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # Thread pool for file dialog and tunnel
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
 
+def extract_youtube_id(url: str) -> Optional[str]:
+    """Extracts the 11-character YouTube video ID from various link formats."""
+    import re
+    url = url.strip()
+    if len(url) == 11 and re.match(r"^[a-zA-Z0-9_-]{11}$", url):
+        return url
+    patterns = [
+        r"(?:v=|\/v\/|youtu\.be\/|\/embed\/|\/shorts\/)([a-zA-Z0-9_-]{11})",
+        r"(?:watch\?.*v=)([a-zA-Z0-9_-]{11})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
 class WatchPartyState:
     def __init__(self):
+        self.media_type: str = "local"  # "local" or "youtube"
         self.video_path: Optional[str] = None
-        self.video_name: str = "No video selected"
+        self.video_name: str = "No media loaded"
         self.video_size_mb: float = 0.0
+        self.youtube_id: Optional[str] = None
         self.player_status: str = "paused"  # "playing" or "paused"
         self.current_time: float = 0.0
         self.playback_rate: float = 1.0
@@ -55,9 +73,20 @@ class WatchPartyState:
     def set_video(self, file_path: str):
         if not os.path.isfile(file_path):
             raise FileNotFoundError("Video file does not exist")
+        self.media_type = "local"
+        self.youtube_id = None
         self.video_path = str(file_path)
         self.video_name = os.path.basename(file_path)
         self.video_size_mb = round(os.path.getsize(file_path) / (1024 * 1024), 2)
+        self.current_time = 0.0
+        self.player_status = "paused"
+        self.last_update_ts = time.time()
+
+    def set_youtube(self, video_id: str, title: Optional[str] = None):
+        self.media_type = "youtube"
+        self.youtube_id = video_id
+        self.video_name = title or f"YouTube ({video_id})"
+        self.video_size_mb = 0.0
         self.current_time = 0.0
         self.player_status = "paused"
         self.last_update_ts = time.time()
@@ -135,7 +164,9 @@ async def get_status():
     return {
         "local_ip": get_local_ip(),
         "tunnel_url": tunnel_manager.public_url,
-        "video_selected": state.video_path is not None,
+        "media_type": state.media_type,
+        "youtube_id": state.youtube_id,
+        "video_selected": (state.media_type == "local" and state.video_path is not None) or (state.media_type == "youtube" and state.youtube_id is not None),
         "video_name": state.video_name,
         "video_size_mb": state.video_size_mb,
         "player_status": state.player_status,
@@ -147,6 +178,28 @@ async def get_status():
             for cid, c in state.clients.items()
         ]
     }
+
+@app.post("/api/set-youtube-url")
+async def set_youtube_url(payload: dict):
+    url = payload.get("url", "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="No YouTube URL provided")
+    
+    video_id = extract_youtube_id(url)
+    if not video_id:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL or Video ID")
+    
+    title = payload.get("title") or f"YouTube ({video_id})"
+    state.set_youtube(video_id, title)
+    
+    await broadcast({
+        "type": "media_mode_changed",
+        "media_type": "youtube",
+        "youtube_id": video_id,
+        "video_name": state.video_name,
+        "currentTime": 0.0
+    })
+    return {"success": True, "video_id": video_id, "title": state.video_name}
 
 @app.post("/api/tunnel/start")
 async def start_tunnel_endpoint():
@@ -169,7 +222,8 @@ async def select_file_dialog():
     if selected and os.path.exists(selected):
         state.set_video(selected)
         await broadcast({
-            "type": "video_loaded",
+            "type": "media_mode_changed",
+            "media_type": "local",
             "video_name": state.video_name,
             "video_size_mb": state.video_size_mb,
             "currentTime": 0.0
@@ -184,7 +238,8 @@ async def set_video_path(payload: dict):
         raise HTTPException(status_code=400, detail="File path does not exist on host")
     state.set_video(path)
     await broadcast({
-        "type": "video_loaded",
+        "type": "media_mode_changed",
+        "media_type": "local",
         "video_name": state.video_name,
         "video_size_mb": state.video_size_mb,
         "currentTime": 0.0
@@ -229,8 +284,10 @@ async def websocket_endpoint(websocket: WebSocket):
             "is_host": is_host,
             "host_id": state.host_client_id,
             "tunnel_url": tunnel_manager.public_url,
+            "media_type": state.media_type,
+            "youtube_id": state.youtube_id,
             "video_name": state.video_name,
-            "video_selected": state.video_path is not None,
+            "video_selected": (state.media_type == "local" and state.video_path is not None) or (state.media_type == "youtube" and state.youtube_id is not None),
             "player_status": state.player_status,
             "currentTime": state.get_estimated_time(),
             "playback_rate": state.playback_rate,

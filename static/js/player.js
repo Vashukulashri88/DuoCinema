@@ -1,9 +1,8 @@
 /**
  * High-Performance Synchronized Video Player Controller for DuoCinema
- * Specially optimized for massive 15GB-16GB 1080p/4K high-bitrate videos:
- * - Adaptive rate-based drift smoothing (no-stutter catchup)
- * - Smart Buffer Lock (prevents desync during buffer stalls)
- * - Sub-second seeking & progressive buffer visualization
+ * Supports both:
+ * 1. Massive 15GB-16GB 1080p/4K Local Movie Files (RFC 7233 Range Streaming & Buffer Lock)
+ * 2. Real-Time Synchronized YouTube Video Streaming via YouTube IFrame Player API
  */
 
 class PlayerController {
@@ -11,6 +10,7 @@ class PlayerController {
         this.wsSend = wsSendCallback;
         this.video = document.getElementById("sharedVideo");
         this.videoWrapper = document.getElementById("videoWrapper");
+        this.youtubeContainer = document.getElementById("youtubeContainer");
         this.playerControls = document.getElementById("playerControls");
         this.progressBarContainer = document.getElementById("progressBarContainer");
         this.progressPlayed = document.getElementById("progressPlayed");
@@ -32,6 +32,12 @@ class PlayerController {
 
         this.syncIndicator = document.getElementById("syncIndicator");
 
+        // Media modes: "local" or "youtube"
+        this.mediaMode = "local";
+        this.ytPlayer = null;
+        this.ytReady = false;
+        this.pendingYoutube = null;
+
         this.isRemoteUpdate = false;
         this.isSeeking = false;
         this.isBuffering = false;
@@ -42,27 +48,129 @@ class PlayerController {
         this.isSmoothCatchingUp = false;
 
         this.initBufferIndicator();
+        this.initYouTubeAPI();
         this.bindEvents();
         this.bindKeyboardShortcuts();
         this.startHeartbeat();
     }
 
     initBufferIndicator() {
-        // Create an overlay badge for HD buffering status
         this.bufferBadge = document.createElement("div");
         this.bufferBadge.className = "buffer-badge";
-        this.bufferBadge.innerHTML = `<span class="spinner">⏳</span> <span class="buffer-text">Buffering HD Stream...</span>`;
+        this.bufferBadge.innerHTML = `<span class="spinner">⏳</span> <span class="buffer-text">Buffering Stream...</span>`;
         this.bufferBadge.style.display = "none";
         if (this.videoWrapper) {
             this.videoWrapper.appendChild(this.bufferBadge);
         }
     }
 
+    initYouTubeAPI() {
+        window.onYouTubeIframeAPIReady = () => {
+            console.log("YouTube IFrame API Ready");
+            this.ytReady = true;
+            if (this.pendingYoutube) {
+                const { videoId, startTime, autoPlay } = this.pendingYoutube;
+                this.pendingYoutube = null;
+                this.loadYoutubeVideo(videoId, startTime, autoPlay);
+            }
+        };
+
+        if (window.YT && window.YT.Player) {
+            this.ytReady = true;
+        }
+    }
+
+    loadYoutubeVideo(videoId, startTime = 0, autoPlay = false) {
+        this.mediaMode = "youtube";
+
+        // Hide and pause local video
+        if (this.video) {
+            this.video.pause();
+            this.video.style.display = "none";
+        }
+        if (this.youtubeContainer) {
+            this.youtubeContainer.style.display = "block";
+        }
+
+        // Hide empty state overlay
+        const noMovieOverlay = document.getElementById("noMovieOverlay");
+        if (noMovieOverlay) noMovieOverlay.style.display = "none";
+
+        if (!this.ytReady || !window.YT || !window.YT.Player) {
+            console.log("YouTube API not ready yet, queuing video:", videoId);
+            this.pendingYoutube = { videoId, startTime, autoPlay };
+            return;
+        }
+
+        if (!this.ytPlayer) {
+            console.log("Instantiating YT.Player for video:", videoId);
+            this.ytPlayer = new YT.Player('youtubePlayer', {
+                videoId: videoId,
+                playerVars: {
+                    autoplay: autoPlay ? 1 : 0,
+                    start: Math.floor(startTime),
+                    controls: 1,
+                    rel: 0,
+                    modestbranding: 1,
+                    enablejsapi: 1,
+                    origin: window.location.origin
+                },
+                events: {
+                    onReady: (event) => {
+                        console.log("YouTube Player is ready");
+                        if (startTime > 0) {
+                            event.target.seekTo(startTime, true);
+                        }
+                        if (autoPlay) {
+                            event.target.playVideo();
+                        }
+                    },
+                    onStateChange: (event) => this.onYouTubeStateChange(event)
+                }
+            });
+        } else {
+            console.log("Loading new video into existing YT.Player:", videoId);
+            this.isRemoteUpdate = true;
+            if (autoPlay) {
+                this.ytPlayer.loadVideoById({ videoId: videoId, startSeconds: startTime });
+            } else {
+                this.ytPlayer.cueVideoById({ videoId: videoId, startSeconds: startTime });
+            }
+            setTimeout(() => { this.isRemoteUpdate = false; }, 800);
+        }
+
+        this.showSyncFlash("YouTube Ready: " + videoId);
+    }
+
+    onYouTubeStateChange(event) {
+        if (this.isRemoteUpdate) return;
+
+        // YT.PlayerState: PLAYING=1, PAUSED=2
+        if (event.data === YT.PlayerState.PLAYING) {
+            this.updatePlayPauseUI(true);
+            const curTime = this.ytPlayer.getCurrentTime();
+            this.wsSend({
+                type: "player_action",
+                action: "play",
+                currentTime: curTime
+            });
+        } else if (event.data === YT.PlayerState.PAUSED) {
+            this.updatePlayPauseUI(false);
+            const curTime = this.ytPlayer.getCurrentTime();
+            this.wsSend({
+                type: "player_action",
+                action: "pause",
+                currentTime: curTime
+            });
+        }
+    }
+
     bindEvents() {
         if (!this.video) return;
 
-        // Video playback events
+        // Video playback events for local movie
         this.video.addEventListener("play", () => {
+            if (this.mediaMode !== "local") return;
             this.updatePlayPauseUI(true);
             if (!this.isRemoteUpdate && !this.partnerBuffering) {
                 this.wsSend({
@@ -74,6 +182,7 @@ class PlayerController {
         });
 
         this.video.addEventListener("pause", () => {
+            if (this.mediaMode !== "local") return;
             this.updatePlayPauseUI(false);
             if (!this.isRemoteUpdate && !this.isBuffering) {
                 this.wsSend({
@@ -85,6 +194,7 @@ class PlayerController {
         });
 
         this.video.addEventListener("timeupdate", () => {
+            if (this.mediaMode !== "local") return;
             if (!this.isSeeking) {
                 this.updateProgressBar();
             }
@@ -92,12 +202,13 @@ class PlayerController {
         });
 
         this.video.addEventListener("loadedmetadata", () => {
+            if (this.mediaMode !== "local") return;
             this.durationDisplay.innerText = this.formatTime(this.video.duration);
             this.showSyncFlash("16GB HD Stream Ready");
         });
 
-        // Smart Buffer Coordination: when 15GB video buffers on network/disk
         this.video.addEventListener("waiting", () => {
+            if (this.mediaMode !== "local") return;
             console.log("Local video buffering...");
             this.isBuffering = true;
             this.showBufferUI("Buffering HD video...", true);
@@ -108,6 +219,7 @@ class PlayerController {
         });
 
         this.video.addEventListener("canplay", () => {
+            if (this.mediaMode !== "local") return;
             if (this.isBuffering) {
                 this.isBuffering = false;
                 if (!this.partnerBuffering) {
@@ -121,6 +233,7 @@ class PlayerController {
         });
 
         this.video.addEventListener("playing", () => {
+            if (this.mediaMode !== "local") return;
             this.isBuffering = false;
             if (!this.partnerBuffering) {
                 this.showBufferUI("", false);
@@ -148,13 +261,22 @@ class PlayerController {
 
         // Volume
         this.movieVolume.addEventListener("input", (e) => {
-            this.video.volume = parseFloat(e.target.value);
+            const vol = parseFloat(e.target.value);
+            this.video.volume = vol;
             this.video.muted = false;
+            if (this.ytPlayer && typeof this.ytPlayer.setVolume === "function") {
+                this.ytPlayer.setVolume(vol * 100);
+                this.ytPlayer.unMute();
+            }
             this.updateVolumeIcon();
         });
 
         this.btnMuteMovie.addEventListener("click", () => {
             this.video.muted = !this.video.muted;
+            if (this.ytPlayer && typeof this.ytPlayer.isMuted === "function") {
+                if (this.ytPlayer.isMuted()) this.ytPlayer.unMute();
+                else this.ytPlayer.mute();
+            }
             this.updateVolumeIcon();
         });
 
@@ -163,6 +285,9 @@ class PlayerController {
             const rate = parseFloat(e.target.value);
             this.basePlaybackRate = rate;
             this.video.playbackRate = rate;
+            if (this.ytPlayer && typeof this.ytPlayer.setPlaybackRate === "function") {
+                this.ytPlayer.setPlaybackRate(rate);
+            }
             if (!this.isRemoteUpdate) {
                 this.wsSend({
                     type: "player_rate",
@@ -178,10 +303,12 @@ class PlayerController {
         if (this.btnSyncNow) {
             this.btnSyncNow.addEventListener("click", () => {
                 this.showSyncFlash("Sync requested");
+                let cur = this.getCurrentTime();
+                let isPaused = this.isPaused();
                 this.wsSend({
                     type: "player_action",
-                    action: this.video.paused ? "pause" : "play",
-                    currentTime: this.video.currentTime
+                    action: isPaused ? "pause" : "play",
+                    currentTime: cur
                 });
             });
         }
@@ -189,7 +316,7 @@ class PlayerController {
         // Auto hide controls
         this.videoWrapper.addEventListener("mousemove", () => this.resetControlsVisibility());
         this.videoWrapper.addEventListener("mouseleave", () => {
-            if (!this.video.paused) {
+            if (!this.isPaused()) {
                 this.playerControls.classList.remove("visible");
             }
         });
@@ -214,12 +341,40 @@ class PlayerController {
             } else if (e.code === "KeyM") {
                 e.preventDefault();
                 this.video.muted = !this.video.muted;
+                if (this.ytPlayer && typeof this.ytPlayer.isMuted === "function") {
+                    if (this.ytPlayer.isMuted()) this.ytPlayer.unMute();
+                    else this.ytPlayer.mute();
+                }
                 this.updateVolumeIcon();
             }
         });
     }
 
+    getCurrentTime() {
+        if (this.mediaMode === "youtube" && this.ytPlayer && typeof this.ytPlayer.getCurrentTime === "function") {
+            return this.ytPlayer.getCurrentTime();
+        }
+        return this.video.currentTime || 0;
+    }
+
+    isPaused() {
+        if (this.mediaMode === "youtube" && this.ytPlayer && typeof this.ytPlayer.getPlayerState === "function") {
+            return this.ytPlayer.getPlayerState() !== YT.PlayerState.PLAYING;
+        }
+        return this.video.paused;
+    }
+
     togglePlayPause() {
+        if (this.mediaMode === "youtube" && this.ytPlayer && typeof this.ytPlayer.getPlayerState === "function") {
+            const state = this.ytPlayer.getPlayerState();
+            if (state === YT.PlayerState.PLAYING) {
+                this.ytPlayer.pauseVideo();
+            } else {
+                this.ytPlayer.playVideo();
+            }
+            return;
+        }
+
         if (this.video.paused) {
             this.video.play().catch(e => console.log("Autoplay policy:", e));
         } else {
@@ -228,12 +383,34 @@ class PlayerController {
     }
 
     seekRelative(seconds) {
+        if (this.mediaMode === "youtube" && this.ytPlayer && typeof this.ytPlayer.getCurrentTime === "function") {
+            const dur = this.ytPlayer.getDuration() || 999999;
+            const target = Math.max(0, Math.min(dur, this.ytPlayer.getCurrentTime() + seconds));
+            this.ytPlayer.seekTo(target, true);
+            this.wsSend({
+                type: "player_action",
+                action: "seek",
+                currentTime: target
+            });
+            return;
+        }
+
         if (!this.video.duration) return;
         const target = Math.max(0, Math.min(this.video.duration, this.video.currentTime + seconds));
         this.seekTo(target);
     }
 
     seekTo(targetTime) {
+        if (this.mediaMode === "youtube" && this.ytPlayer && typeof this.ytPlayer.seekTo === "function") {
+            this.ytPlayer.seekTo(targetTime, true);
+            this.wsSend({
+                type: "player_action",
+                action: "seek",
+                currentTime: targetTime
+            });
+            return;
+        }
+
         this.video.currentTime = targetTime;
         this.wsSend({
             type: "player_action",
@@ -243,6 +420,16 @@ class PlayerController {
     }
 
     handleProgressClick(e) {
+        if (this.mediaMode === "youtube" && this.ytPlayer && typeof this.ytPlayer.getDuration === "function") {
+            const dur = this.ytPlayer.getDuration();
+            if (dur > 0) {
+                const rect = this.progressBarContainer.getBoundingClientRect();
+                const pos = (e.clientX - rect.left) / rect.width;
+                this.seekTo(pos * dur);
+            }
+            return;
+        }
+
         if (!this.video.duration) return;
         const rect = this.progressBarContainer.getBoundingClientRect();
         const pos = (e.clientX - rect.left) / rect.width;
@@ -251,10 +438,15 @@ class PlayerController {
     }
 
     handleProgressHover(e) {
-        if (!this.video.duration) return;
+        let dur = this.video.duration;
+        if (this.mediaMode === "youtube" && this.ytPlayer && typeof this.ytPlayer.getDuration === "function") {
+            dur = this.ytPlayer.getDuration();
+        }
+        if (!dur) return;
+
         const rect = this.progressBarContainer.getBoundingClientRect();
         const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-        const hoverTime = pos * this.video.duration;
+        const hoverTime = pos * dur;
         this.progressHoverTime.innerText = this.formatTime(hoverTime);
         this.progressHoverTime.style.left = `${pos * 100}%`;
         this.progressHoverTime.style.display = "block";
@@ -270,7 +462,6 @@ class PlayerController {
     updateBuffered() {
         if (!this.video.duration || this.video.buffered.length === 0) return;
         
-        // Find buffer range covering current time
         const curTime = this.video.currentTime;
         let activeEnd = 0;
         for (let i = 0; i < this.video.buffered.length; i++) {
@@ -286,7 +477,6 @@ class PlayerController {
         const percent = (activeEnd / this.video.duration) * 100;
         this.progressBuffered.style.width = `${percent}%`;
 
-        // Calculate seconds ahead
         const aheadSec = Math.max(0, Math.round(activeEnd - curTime));
         if (aheadSec > 5 && this.syncIndicator) {
             const label = this.syncIndicator.querySelector(".sync-text");
@@ -306,9 +496,16 @@ class PlayerController {
     }
 
     updateVolumeIcon() {
-        if (this.video.muted || this.video.volume === 0) {
+        let isMuted = this.video.muted || this.video.volume === 0;
+        let vol = this.video.volume;
+        if (this.mediaMode === "youtube" && this.ytPlayer && typeof this.ytPlayer.isMuted === "function") {
+            isMuted = this.ytPlayer.isMuted();
+            vol = (this.ytPlayer.getVolume() || 100) / 100;
+        }
+
+        if (isMuted || vol === 0) {
             this.volumeIcon.innerText = "🔇";
-        } else if (this.video.volume < 0.5) {
+        } else if (vol < 0.5) {
             this.volumeIcon.innerText = "🔉";
         } else {
             this.volumeIcon.innerText = "🔊";
@@ -318,7 +515,7 @@ class PlayerController {
     resetControlsVisibility() {
         this.playerControls.classList.add("visible");
         clearTimeout(this.controlsTimeout);
-        if (!this.video.paused) {
+        if (!this.isPaused()) {
             this.controlsTimeout = setTimeout(() => {
                 this.playerControls.classList.remove("visible");
             }, 3000);
@@ -376,6 +573,30 @@ class PlayerController {
 
         this.isRemoteUpdate = true;
 
+        if (this.mediaMode === "youtube" && this.ytPlayer && typeof this.ytPlayer.getPlayerState === "function") {
+            if (action === "play") {
+                if (currentTime !== undefined && Math.abs(this.ytPlayer.getCurrentTime() - currentTime) > 1.2) {
+                    this.ytPlayer.seekTo(currentTime, true);
+                }
+                this.ytPlayer.playVideo();
+                this.showSyncFlash("Playing YouTube");
+            } else if (action === "pause") {
+                if (currentTime !== undefined) {
+                    this.ytPlayer.seekTo(currentTime, true);
+                }
+                this.ytPlayer.pauseVideo();
+                this.showSyncFlash("Paused YouTube");
+            } else if (action === "seek") {
+                if (currentTime !== undefined) {
+                    this.ytPlayer.seekTo(currentTime, true);
+                    this.showSyncFlash("Seeked: " + this.formatTime(currentTime));
+                }
+            }
+            setTimeout(() => { this.isRemoteUpdate = false; }, 600);
+            return;
+        }
+
+        // Local video playback action
         if (action === "play") {
             if (currentTime !== undefined && Math.abs(this.video.currentTime - currentTime) > 1.2) {
                 this.video.currentTime = currentTime;
@@ -404,18 +625,30 @@ class PlayerController {
         }, 500);
     }
 
-    /**
-     * Optimized 15GB Adaptive Drift Compensation:
-     * - If drift is 0.4s - 2.5s: Micro-tunes playback speed (1.05x or 0.95x) to eliminate decoder frame-drop stutters.
-     * - If drift is > 2.5s: Performs hard seek.
-     */
     handleSyncHeartbeat(targetTime, status) {
         if (targetTime === undefined || isNaN(targetTime)) return;
+
+        // YouTube drift sync
+        if (this.mediaMode === "youtube" && this.ytPlayer && typeof this.ytPlayer.getCurrentTime === "function") {
+            const curTime = this.ytPlayer.getCurrentTime();
+            const diff = targetTime - curTime;
+            if (Math.abs(diff) > 2.0) {
+                console.log(`YouTube drift (${diff.toFixed(2)}s). Resyncing...`);
+                this.isRemoteUpdate = true;
+                this.ytPlayer.seekTo(targetTime, true);
+                if (status === "playing") this.ytPlayer.playVideo();
+                else if (status === "paused") this.ytPlayer.pauseVideo();
+                this.showSyncFlash("Resynced YouTube");
+                setTimeout(() => { this.isRemoteUpdate = false; }, 600);
+            }
+            return;
+        }
+
+        // Local HD video drift compensation
         const diff = targetTime - this.video.currentTime;
         const absDiff = Math.abs(diff);
 
         if (absDiff > 2.5) {
-            // Large jump: do hard seek
             console.log(`Large drift (${absDiff.toFixed(2)}s). Hard seeking to sync.`);
             this.isRemoteUpdate = true;
             this.video.currentTime = targetTime;
@@ -429,18 +662,14 @@ class PlayerController {
                 this.isRemoteUpdate = false;
             }, 600);
         } else if (absDiff > 0.45 && !this.video.paused) {
-            // Small drift in HD video: smooth micro-tuning without freezing frames
             if (diff > 0) {
-                // We are behind: speed up slightly by 5%
                 this.video.playbackRate = this.basePlaybackRate * 1.05;
                 this.isSmoothCatchingUp = true;
             } else {
-                // We are ahead: slow down slightly by 5%
                 this.video.playbackRate = this.basePlaybackRate * 0.95;
                 this.isSmoothCatchingUp = true;
             }
         } else if (this.isSmoothCatchingUp && absDiff <= 0.2) {
-            // In lockstep: restore base playback speed
             this.video.playbackRate = this.basePlaybackRate;
             this.isSmoothCatchingUp = false;
         }
@@ -449,20 +678,32 @@ class PlayerController {
     handlePartnerBuffering(isBuffering) {
         this.partnerBuffering = isBuffering;
         if (isBuffering) {
-            this.showBufferUI("Partner is buffering 16GB video...", true);
-            if (!this.video.paused) {
-                this.video.pause();
+            this.showBufferUI("Partner is buffering...", true);
+            if (!this.isPaused()) {
+                this.togglePlayPause();
             }
         } else {
             this.showBufferUI("", false);
-            if (this.video.paused && !this.isBuffering) {
-                this.video.play().catch(e => console.log(e));
+            if (this.isPaused() && !this.isBuffering) {
+                this.togglePlayPause();
             }
         }
     }
 
     startHeartbeat() {
         this.heartbeatInterval = setInterval(() => {
+            if (this.mediaMode === "youtube" && this.ytPlayer && typeof this.ytPlayer.getPlayerState === "function") {
+                const s = this.ytPlayer.getPlayerState();
+                if (s === YT.PlayerState.PLAYING) {
+                    this.wsSend({
+                        type: "player_sync_heartbeat",
+                        currentTime: this.ytPlayer.getCurrentTime(),
+                        status: "playing"
+                    });
+                }
+                return;
+            }
+
             if (!this.video.paused && !this.video.seeking && this.video.duration > 0 && !this.isBuffering) {
                 this.wsSend({
                     type: "player_sync_heartbeat",
@@ -474,10 +715,20 @@ class PlayerController {
     }
 
     loadNewVideo(filename) {
-        const source = document.getElementById("videoSource");
-        source.src = `/api/video/stream?t=${Date.now()}`;
-        this.video.load();
-        this.video.currentTime = 0;
+        this.mediaMode = "local";
+        if (this.ytPlayer && typeof this.ytPlayer.pauseVideo === "function") {
+            try { this.ytPlayer.pauseVideo(); } catch (e) {}
+        }
+        if (this.youtubeContainer) {
+            this.youtubeContainer.style.display = "none";
+        }
+        if (this.video) {
+            this.video.style.display = "block";
+            const source = document.getElementById("videoSource");
+            source.src = `/api/video/stream?t=${Date.now()}`;
+            this.video.load();
+            this.video.currentTime = 0;
+        }
         this.showSyncFlash("HD Ready: " + filename);
     }
 }
